@@ -1,0 +1,195 @@
+#!/usr/bin/env bash
+#
+# yeet - Asynchronously delete files and directories with extreme prejudice.
+#
+# Moves specified files or directories into a hidden temporary directory
+# in their respective origin directory, then deletes the temporary
+# directories in the background.
+
+set -u -o pipefail
+
+usage() {
+    cat <<'EOF'
+Usage: yeet [OPTIONS] [FILE|DIR]...
+
+Deletes files or directories asynchronously by moving them to a hidden
+temporary directory first, then removing them in the background.
+
+Options:
+  -n, --dry-run  display actions that would be taken without deleting anything
+  -h, --help     display this help and exit
+  --             treat all subsequent arguments as file paths
+EOF
+}
+
+if [ "$#" -eq 0 ]; then
+    usage >&2
+    exit 1
+fi
+
+files=()
+parse_options=true
+dry_run=false
+
+while [ "$#" -gt 0 ]; do
+    arg="$1"
+    shift
+    if [ "$parse_options" = true ]; then
+        case "$arg" in
+            --)
+                parse_options=false
+                continue
+                ;;
+            -h|--help)
+                usage
+                exit 0
+                ;;
+            -n|--dry-run)
+                dry_run=true
+                continue
+                ;;
+            -r|-R|-f|-rf|-fr|-rF|-Fr)
+                # Accepted as no-op flags for muscle-memory compatibility with rm
+                continue
+                ;;
+            -*)
+                echo "yeet: unrecognized option '$arg'" >&2
+                echo "Try 'yeet --help' for more information." >&2
+                exit 1
+                ;;
+            *)
+                files+=("$arg")
+                ;;
+        esac
+    else
+        files+=("$arg")
+    fi
+done
+
+if [ "${#files[@]}" -eq 0 ]; then
+    usage >&2
+    exit 1
+fi
+
+exit_status=0
+origin_parents=()
+origin_yeet_dirs=()
+hidden_dirs=()
+
+find_yeet_dir() {
+    local target="$1"
+    local i
+    for ((i=0; i<${#origin_parents[@]}; i++)); do
+        if [ "${origin_parents[i]}" = "$target" ]; then
+            echo "${origin_yeet_dirs[i]}"
+            return 0
+        fi
+    done
+    return 1
+}
+
+create_yeet_dir() {
+    local parent="$1"
+    local template="${parent%/}/.yeet-XXXXXX"
+    mktemp -d "$template" 2>/dev/null
+}
+
+# shellcheck disable=SC2329
+cleanup_on_interrupt() {
+    if [ "${#hidden_dirs[@]}" -gt 0 ]; then
+        if [ "$dry_run" = false ]; then
+            if command -v nohup >/dev/null 2>&1; then
+                nohup rm -rf -- "${hidden_dirs[@]}" >/dev/null 2>&1 &
+            else
+                ( rm -rf -- "${hidden_dirs[@]}" >/dev/null 2>&1 & )
+            fi
+        fi
+    fi
+    exit 130
+}
+
+trap cleanup_on_interrupt INT TERM HUP
+
+for item in "${files[@]}"; do
+    # Check if item exists (including broken symlinks)
+    if [ ! -e "$item" ] && [ ! -L "$item" ]; then
+        echo "yeet: cannot yeet '$item': No such file or directory" >&2
+        exit_status=1
+        continue
+    fi
+
+    # Normalize trailing slashes (e.g. dir/ -> dir)
+    clean_path="$item"
+    while [[ "$clean_path" == */ && "$clean_path" != "/" ]]; do
+        clean_path="${clean_path%/}"
+    done
+
+    # Refuse to delete root
+    if [[ "$clean_path" =~ ^/+$ ]]; then
+        echo "yeet: refusing to delete root directory '/'" >&2
+        exit_status=1
+        continue
+    fi
+
+    # Refuse to delete . or ..
+    base=$(basename -- "$clean_path")
+    if [[ "$base" == "." || "$base" == ".." ]]; then
+        echo "yeet: refusing to delete '.' or '..' directory: skipping '$item'" >&2
+        exit_status=1
+        continue
+    fi
+
+    parent_dir=$(dirname -- "$clean_path")
+    abs_parent=$(cd -P -- "$parent_dir" 2>/dev/null && pwd -P)
+    if [ -z "$abs_parent" ]; then
+        echo "yeet: cannot access directory '$parent_dir': Permission denied" >&2
+        exit_status=1
+        continue
+    fi
+
+    # Retrieve or create hidden yeet directory for this origin directory
+    yeet_dir=$(find_yeet_dir "$abs_parent") || true
+    if [ -z "$yeet_dir" ]; then
+        if [ "$dry_run" = true ]; then
+            yeet_dir="${abs_parent%/}/.yeet-XXXXXX"
+        else
+            yeet_dir=$(create_yeet_dir "$abs_parent")
+            if [ -z "$yeet_dir" ] || [ ! -d "$yeet_dir" ]; then
+                echo "yeet: cannot create temporary directory in '$abs_parent'" >&2
+                exit_status=1
+                continue
+            fi
+        fi
+        origin_parents+=("$abs_parent")
+        origin_yeet_dirs+=("$yeet_dir")
+        hidden_dirs+=("$yeet_dir")
+    fi
+
+    # Move item into the hidden yeet directory
+    if [ "$dry_run" = true ]; then
+        echo "would move '$clean_path' -> '$yeet_dir/'"
+    else
+        if ! mv -f -- "$clean_path" "$yeet_dir/"; then
+            exit_status=1
+        fi
+    fi
+done
+
+trap - INT TERM HUP
+
+# Delete all created hidden directories in the background
+if [ "${#hidden_dirs[@]}" -gt 0 ]; then
+    if [ "$dry_run" = true ]; then
+        for d in "${hidden_dirs[@]}"; do
+            echo "would delete '$d' in background"
+        done
+    else
+        if command -v nohup >/dev/null 2>&1; then
+            nohup rm -rf -- "${hidden_dirs[@]}" >/dev/null 2>&1 &
+        else
+            ( rm -rf -- "${hidden_dirs[@]}" >/dev/null 2>&1 & )
+        fi
+    fi
+fi
+
+exit "$exit_status"
