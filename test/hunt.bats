@@ -272,6 +272,52 @@ EOF
     [ "$(cat "$which_log")" = "hunt_ed:$TEST_DIR/search/file.txt" ]
 }
 
+@test "hunt --view pipes concatenated files with underscore header and path to PAGER without separate search output" {
+    mkdir -p "$TEST_DIR/search"
+    echo "first file body" > "$TEST_DIR/search/alpha_one.txt"
+    echo "second file with alpha inside" > "$TEST_DIR/search/two.txt"
+
+    export COLUMNS=20
+    export PAGER="cat"
+    run hunt --view "alpha" "$TEST_DIR/search"
+    [ "$status" -eq 0 ]
+
+    expected="____________________
+$TEST_DIR/search/alpha_one.txt
+
+first file body
+____________________
+$TEST_DIR/search/two.txt
+
+second file with alpha inside"
+    [ "$output" = "$expected" ]
+}
+
+@test "hunt --view defaults to more when PAGER is not set" {
+    mkdir -p "$TEST_DIR/search" "$TEST_DIR/bin"
+    echo "hello world" > "$TEST_DIR/search/hello.txt"
+
+    pager_log="$TEST_DIR/pager.log"
+    cat <<EOF > "$TEST_DIR/bin/more"
+#!/usr/bin/env bash
+cat > "$pager_log"
+EOF
+    chmod +x "$TEST_DIR/bin/more"
+
+    export PATH="$TEST_DIR/bin:$PATH"
+    export COLUMNS=10
+    unset PAGER
+
+    run hunt --view "hello" "$TEST_DIR/search"
+    [ "$status" -eq 0 ]
+
+    expected="__________
+$TEST_DIR/search/hello.txt
+
+hello world"
+    [ "$(cat "$pager_log")" = "$expected" ]
+}
+
 @test "hunt supports -- to search for queries starting with a dash" {
     echo "has -v flag inside" > "$TEST_DIR/flags.txt"
 
@@ -292,4 +338,8 @@ EOF
     run hunt "one" "two" "three"
     [ "$status" -ne 0 ]
     [[ "$output" =~ "too many arguments" ]]
+
+    run hunt --edit --view "query" "$TEST_DIR"
+    [ "$status" -ne 0 ]
+    [[ "$output" =~ "cannot specify both --edit and --view" ]]
 }

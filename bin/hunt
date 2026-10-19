@@ -26,6 +26,8 @@ Options:
   -a, --all   search hidden directories as well (still skips .git)
   -e, --edit  open all found files in the editor ($SHELLBITS_HUNT_EDITOR,
               $SHELLBITS_EDITOR, $EDITOR, or nano/pico/vi)
+  -v, --view  concatenate all found files with headers and pipe to $PAGER
+              or more (instead of printing normal search results)
   -h, --help  display this help and exit
   --          treat all subsequent arguments as positional arguments
 EOF
@@ -49,6 +51,22 @@ escape_glob() {
     printf '%s' "$output"
 }
 
+get_term_width() {
+    local cols=""
+    if [[ "${COLUMNS:-}" =~ ^[1-9][0-9]*$ ]]; then
+        printf '%s' "$COLUMNS"
+        return 0
+    fi
+    if command -v tput >/dev/null 2>&1; then
+        cols="$(tput cols 2>/dev/null || true)"
+        if [[ "$cols" =~ ^[1-9][0-9]*$ ]]; then
+            printf '%s' "$cols"
+            return 0
+        fi
+    fi
+    printf '80'
+}
+
 if [ "$#" -eq 0 ]; then
     usage >&2
     exit 1
@@ -58,6 +76,7 @@ args=()
 parse_options=true
 search_all=false
 edit_mode=false
+view_mode=false
 
 while [ "$#" -gt 0 ]; do
     arg="$1"
@@ -76,9 +95,18 @@ while [ "$#" -gt 0 ]; do
                 edit_mode=true
                 continue
                 ;;
+            -v|--view)
+                view_mode=true
+                continue
+                ;;
             -ae|-ea)
                 search_all=true
                 edit_mode=true
+                continue
+                ;;
+            -av|-va)
+                search_all=true
+                view_mode=true
                 continue
                 ;;
             -h|--help)
@@ -98,6 +126,11 @@ while [ "$#" -gt 0 ]; do
         args+=("$arg")
     fi
 done
+
+if [ "$edit_mode" = true ] && [ "$view_mode" = true ]; then
+    echo "hunt: cannot specify both --edit and --view" >&2
+    exit 1
+fi
 
 if [ "${#args[@]}" -eq 0 ]; then
     usage >&2
@@ -154,31 +187,33 @@ else
     prune_pattern=".*"
 fi
 
-# 1. Filename search (case-insensitive, literal, colored)
+# 1. Filename search (case-insensitive, literal)
 raw_name_results="$(
     find "$find_path" -mindepth 1 -type d -name "$prune_pattern" -prune -o -iname "*${escaped_query}*" -print 2>/dev/null \
         | LC_ALL=C sort || true
 )"
 
-if [ -n "$raw_name_results" ]; then
-    name_results="$(printf '%s\n' "$raw_name_results" | grep -iF --color=always -- "$query" || true)"
-    if [ -n "$name_results" ]; then
-        printf '%s\n\n' "$name_results"
+if [ "$view_mode" = false ]; then
+    if [ -n "$raw_name_results" ]; then
+        name_results="$(printf '%s\n' "$raw_name_results" | grep -iF --color=always -- "$query" || true)"
+        if [ -n "$name_results" ]; then
+            printf '%s\n\n' "$name_results"
+        fi
+    fi
+
+    # 2. Content search (case-insensitive, literal, with matched line and color, skipping binary files)
+    content_results="$(
+        find "$find_path" -mindepth 1 -type d -name "$prune_pattern" -prune -o -type f -exec grep -iFHI --color=always -- "$query" {} + 2>/dev/null \
+            | LC_ALL=C sort || true
+    )"
+
+    if [ -n "$content_results" ]; then
+        printf '%s\n' "$content_results"
     fi
 fi
 
-# 2. Content search (case-insensitive, literal, with matched line and color, skipping binary files)
-content_results="$(
-    find "$find_path" -mindepth 1 -type d -name "$prune_pattern" -prune -o -type f -exec grep -iFHI --color=always -- "$query" {} + 2>/dev/null \
-        | LC_ALL=C sort || true
-)"
-
-if [ -n "$content_results" ]; then
-    printf '%s\n' "$content_results"
-fi
-
-# 3. Open found files in editor if --edit was specified
-if [ "$edit_mode" = true ]; then
+# 3. Collect unique found files for --edit or --view
+if [ "$edit_mode" = true ] || [ "$view_mode" = true ]; then
     raw_content_files="$(
         find "$find_path" -mindepth 1 -type d -name "$prune_pattern" -prune -o -type f -exec grep -iFlI -- "$query" {} + 2>/dev/null || true
     )"
@@ -197,30 +232,52 @@ if [ "$edit_mode" = true ]; then
 
     if [ -n "$combined_candidates" ]; then
         sorted_unique="$(printf '%s\n' "$combined_candidates" | LC_ALL=C sort -u)"
-        edit_files=()
+        found_files=()
         while IFS= read -r file_path; do
             if [ -n "$file_path" ] && [ -f "$file_path" ]; then
-                edit_files+=("$file_path")
+                found_files+=("$file_path")
             fi
         done <<< "$sorted_unique"
 
-        if [ "${#edit_files[@]}" -gt 0 ]; then
-            if [ -n "${SHELLBITS_HUNT_EDITOR:-}" ]; then
-                editor_cmd="$SHELLBITS_HUNT_EDITOR"
-            elif [ -n "${SHELLBITS_EDITOR:-}" ]; then
-                editor_cmd="$SHELLBITS_EDITOR"
-            elif [ -n "${EDITOR:-}" ]; then
-                editor_cmd="$EDITOR"
-            elif command -v nano >/dev/null 2>&1; then
-                editor_cmd="nano"
-            elif command -v pico >/dev/null 2>&1; then
-                editor_cmd="pico"
-            else
-                editor_cmd="vi"
-            fi
+        if [ "${#found_files[@]}" -gt 0 ]; then
+            if [ "$edit_mode" = true ]; then
+                if [ -n "${SHELLBITS_HUNT_EDITOR:-}" ]; then
+                    editor_cmd="$SHELLBITS_HUNT_EDITOR"
+                elif [ -n "${SHELLBITS_EDITOR:-}" ]; then
+                    editor_cmd="$SHELLBITS_EDITOR"
+                elif [ -n "${EDITOR:-}" ]; then
+                    editor_cmd="$EDITOR"
+                elif command -v nano >/dev/null 2>&1; then
+                    editor_cmd="nano"
+                elif command -v pico >/dev/null 2>&1; then
+                    editor_cmd="pico"
+                else
+                    editor_cmd="vi"
+                fi
 
-            read -r -a editor_parts <<< "$editor_cmd"
-            "${editor_parts[@]}" "${edit_files[@]}"
+                read -r -a editor_parts <<< "$editor_cmd"
+                "${editor_parts[@]}" "${found_files[@]}"
+            elif [ "$view_mode" = true ]; then
+                if [ -n "${PAGER:-}" ]; then
+                    pager_cmd="$PAGER"
+                else
+                    pager_cmd="more"
+                fi
+
+                term_width="$(get_term_width)"
+                sep_line="$(printf "%${term_width}s" "" | tr ' ' '_')"
+
+                read -r -a pager_parts <<< "$pager_cmd"
+                {
+                    for file_path in "${found_files[@]}"; do
+                        printf '%s\n%s\n\n' "$sep_line" "$file_path"
+                        cat -- "$file_path"
+                        if [ -s "$file_path" ] && [ -n "$(tail -c 1 -- "$file_path" 2>/dev/null)" ]; then
+                            printf '\n'
+                        fi
+                    done
+                } | "${pager_parts[@]}"
+            fi
         fi
     fi
 fi

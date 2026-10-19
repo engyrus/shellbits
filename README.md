@@ -198,6 +198,9 @@ hunt --all env
 # Print results and open all matched files in the default editor
 hunt --edit "TODO"
 
+# Concatenate and view all matched files in $PAGER (or more)
+hunt --view "TODO"
+
 # Search inside a specific directory
 hunt "connection string" ~/repos/myproject
 
@@ -213,6 +216,7 @@ export SHELLBITS_HUNT_EDITOR="code"
 
 * **`-a`**, **`--all`**: Include hidden directories in the search (still skips `.git` directories).
 * **`-e`**, **`--edit`**: Open all found files in the editor after printing results. Uses the first set variable from `$SHELLBITS_HUNT_EDITOR`, `$SHELLBITS_EDITOR`, or `$EDITOR`, falling back to `nano`, `pico`, or `vi`.
+* **`-v`**, **`--view`**: Concatenate all found files (preceded by a full-width line of underscores, the file path, and a blank line) and pipe them to `$PAGER` (or `more`), instead of printing the standard search output.
 * **`-h`**, **`--help`**: Display usage help and exit.
 * **`--`**: Stop option parsing; treat all subsequent arguments as positional arguments.
 
