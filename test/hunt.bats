@@ -208,43 +208,66 @@ $TEST_DIR/search/content_only.txt"
     [ "$(cat "$editor_log")" = "$expected_files" ]
 }
 
-@test "hunt --edit respects editor variable precedence and defaults to pico" {
+@test "hunt --edit respects editor variable precedence and nano -> pico -> vi fallback" {
     mkdir -p "$TEST_DIR/search" "$TEST_DIR/bin"
     echo "match_me" > "$TEST_DIR/search/file.txt"
 
-    which_log="$TEST_DIR/which_editor.log"
-
-    for name in hunt_ed sb_ed std_ed pico; do
-        cat <<EOF > "$TEST_DIR/bin/$name"
-#!/usr/bin/env bash
-echo "$name:\$*" > "$which_log"
-EOF
-        chmod +x "$TEST_DIR/bin/$name"
+    # Symlink only required system tools into isolated bin so host nano/pico don't interfere
+    for tool in bash env find grep sort; do
+        ln -s "$(command -v "$tool")" "$TEST_DIR/bin/$tool"
     done
 
-    export PATH="$TEST_DIR/bin:$PATH"
+    which_log="$TEST_DIR/which_editor.log"
 
-    # 1. None set -> defaults to pico
+    create_mock_editor() {
+        local ed_name="$1"
+        cat <<EOF > "$TEST_DIR/bin/$ed_name"
+#!/usr/bin/env bash
+echo "$ed_name:\$*" > "$which_log"
+EOF
+        chmod +x "$TEST_DIR/bin/$ed_name"
+    }
+
+    create_mock_editor "vi"
+    create_mock_editor "std_ed"
+    create_mock_editor "sb_ed"
+    create_mock_editor "hunt_ed"
+
+    isolated_path="$REPO_ROOT/bin:$TEST_DIR/bin"
     unset SHELLBITS_HUNT_EDITOR SHELLBITS_EDITOR EDITOR
-    run hunt --edit "match_me" "$TEST_DIR/search"
+
+    # 1. No env vars, no nano, no pico -> falls back to vi
+    PATH="$isolated_path" run hunt --edit "match_me" "$TEST_DIR/search"
+    [ "$status" -eq 0 ]
+    [ "$(cat "$which_log")" = "vi:$TEST_DIR/search/file.txt" ]
+
+    # 2. pico available (no nano) -> falls back to pico over vi
+    create_mock_editor "pico"
+    PATH="$isolated_path" run hunt --edit "match_me" "$TEST_DIR/search"
     [ "$status" -eq 0 ]
     [ "$(cat "$which_log")" = "pico:$TEST_DIR/search/file.txt" ]
 
-    # 2. EDITOR set -> uses EDITOR
+    # 3. nano available -> prefers nano over pico and vi
+    create_mock_editor "nano"
+    PATH="$isolated_path" run hunt --edit "match_me" "$TEST_DIR/search"
+    [ "$status" -eq 0 ]
+    [ "$(cat "$which_log")" = "nano:$TEST_DIR/search/file.txt" ]
+
+    # 4. EDITOR set -> uses EDITOR
     export EDITOR="std_ed"
-    run hunt --edit "match_me" "$TEST_DIR/search"
+    PATH="$isolated_path" run hunt --edit "match_me" "$TEST_DIR/search"
     [ "$status" -eq 0 ]
     [ "$(cat "$which_log")" = "std_ed:$TEST_DIR/search/file.txt" ]
 
-    # 3. SHELLBITS_EDITOR set -> overrides EDITOR
+    # 5. SHELLBITS_EDITOR set -> overrides EDITOR
     export SHELLBITS_EDITOR="sb_ed"
-    run hunt --edit "match_me" "$TEST_DIR/search"
+    PATH="$isolated_path" run hunt --edit "match_me" "$TEST_DIR/search"
     [ "$status" -eq 0 ]
     [ "$(cat "$which_log")" = "sb_ed:$TEST_DIR/search/file.txt" ]
 
-    # 4. SHELLBITS_HUNT_EDITOR set -> overrides SHELLBITS_EDITOR and EDITOR
+    # 6. SHELLBITS_HUNT_EDITOR set -> overrides SHELLBITS_EDITOR and EDITOR
     export SHELLBITS_HUNT_EDITOR="hunt_ed"
-    run hunt --edit "match_me" "$TEST_DIR/search"
+    PATH="$isolated_path" run hunt --edit "match_me" "$TEST_DIR/search"
     [ "$status" -eq 0 ]
     [ "$(cat "$which_log")" = "hunt_ed:$TEST_DIR/search/file.txt" ]
 }

@@ -25,7 +25,7 @@ in the current directory (.).
 Options:
   -a, --all   search hidden directories as well (still skips .git)
   -e, --edit  open all found files in the editor ($SHELLBITS_HUNT_EDITOR,
-              $SHELLBITS_EDITOR, $EDITOR, or pico)
+              $SHELLBITS_EDITOR, $EDITOR, or nano/pico/vi)
   -h, --help  display this help and exit
   --          treat all subsequent arguments as positional arguments
 EOF
@@ -211,8 +211,12 @@ if [ "$edit_mode" = true ]; then
                 editor_cmd="$SHELLBITS_EDITOR"
             elif [ -n "${EDITOR:-}" ]; then
                 editor_cmd="$EDITOR"
-            else
+            elif command -v nano >/dev/null 2>&1; then
+                editor_cmd="nano"
+            elif command -v pico >/dev/null 2>&1; then
                 editor_cmd="pico"
+            else
+                editor_cmd="vi"
             fi
 
             read -r -a editor_parts <<< "$editor_cmd"

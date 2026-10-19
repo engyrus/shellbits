@@ -201,7 +201,7 @@ hunt --edit "TODO"
 # Search inside a specific directory
 hunt "connection string" ~/repos/myproject
 
-# Search for a literal string starting with a dash
+# Search for a literal string starting with a dash (here "-v" is the search term)
 hunt -- -v src/
 
 # Configure a default starting directory or editor in your shell profile:
@@ -212,7 +212,7 @@ export SHELLBITS_HUNT_EDITOR="code"
 ### Options
 
 * **`-a`**, **`--all`**: Include hidden directories in the search (still skips `.git` directories).
-* **`-e`**, **`--edit`**: Open all found files in the editor after printing results. Uses the first set variable from `$SHELLBITS_HUNT_EDITOR`, `$SHELLBITS_EDITOR`, or `$EDITOR`, falling back to `pico`.
+* **`-e`**, **`--edit`**: Open all found files in the editor after printing results. Uses the first set variable from `$SHELLBITS_HUNT_EDITOR`, `$SHELLBITS_EDITOR`, or `$EDITOR`, falling back to `nano`, `pico`, or `vi`.
 * **`-h`**, **`--help`**: Display usage help and exit.
 * **`--`**: Stop option parsing; treat all subsequent arguments as positional arguments.
 
