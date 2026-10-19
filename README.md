@@ -9,7 +9,7 @@ In addition to making sure I don't lose my shell setup again, these commands and
 They are also rather more robust than my original versions (better error handling, help, filename completion).
 Thanks, Google Antigravity!
 
-Most of the capabilities in shellbits work in bash or zsh.
+Most of the capabilities in shellbits work in bash or zsh. (The dynamic git branch prompt requires zsh.)
 
 ---
 
@@ -165,3 +165,56 @@ For muscle-memory compatibility with `rm`, flags such as `-r`, `-R`, `-f`, and `
 
 * **Shell**: Compatible with **Bash 3.2+** (including macOS default `/bin/bash` and Linux Bash 4/5) and **Zsh**.
 * **Platform**: macOS and Linux. Uses `mktemp -d` with explicit templates for portable temporary directory creation.
+
+---
+
+## hunt (`bin/hunt`)
+
+Performs both a **filename search** and a **content search** for a query string. Both searches are **case-insensitive** and **literal** (no regular expressions or wildcard expansion), with the matched search term highlighted in color.
+
+* Results are output in two sections:
+  1. Paths of files/directories whose names contain the search string.
+  2. Matching lines from file contents (`filepath:matched_line`).
+* A blank line is printed after the first section if any filename matches were found.
+* Skips all hidden directories by default; pass `--all` (`-a`) to include hidden directories (`.git` directories are always skipped).
+* Ignores binary files during content searches.
+* Searches in `DIR` if specified; otherwise uses `$SHELLBITS_HUNT_HOME` if set, or the current directory (`.`).
+
+### Usage
+
+```bash
+hunt [OPTIONS] QUERY [DIR]
+```
+
+#### Examples
+
+```bash
+# Search filenames and file contents in the current directory (or $SHELLBITS_HUNT_HOME)
+hunt config
+
+# Include hidden directories (except .git)
+hunt --all env
+
+# Print results and open all matched files in the default editor
+hunt --edit "TODO"
+
+# Search inside a specific directory
+hunt "connection string" ~/repos/myproject
+
+# Search for a literal string starting with a dash
+hunt -- -v src/
+
+# Configure a default starting directory or editor in your shell profile:
+export SHELLBITS_HUNT_HOME="$HOME/repos"
+export SHELLBITS_HUNT_EDITOR="code"
+```
+
+### Options
+
+* **`-a`**, **`--all`**: Include hidden directories in the search (still skips `.git` directories).
+* **`-e`**, **`--edit`**: Open all found files in the editor after printing results. Uses the first set variable from `$SHELLBITS_HUNT_EDITOR`, `$SHELLBITS_EDITOR`, or `$EDITOR`, falling back to `pico`.
+* **`-h`**, **`--help`**: Display usage help and exit.
+* **`--`**: Stop option parsing; treat all subsequent arguments as positional arguments.
+
+
+

@@ -1,0 +1,224 @@
+#!/usr/bin/env bash
+#
+# hunt - Case-insensitive literal search for filenames and file contents.
+#
+# Searches for the given query in filenames first, then in file contents,
+# within the specified directory (or $SHELLBITS_HUNT_HOME, or current directory).
+
+set -u -o pipefail
+
+usage() {
+    cat <<'EOF'
+Usage: hunt [OPTIONS] QUERY [DIR]
+
+Searches for QUERY (case-insensitive, literal string) in both filenames
+and file contents. Results are displayed in two sections: matching filenames
+first, followed by a blank line (if any filename matches were found), and
+then matching lines from file contents.
+
+By default, all hidden directories (starting with '.') are skipped. Use --all
+to include hidden directories (except .git, which is always skipped).
+
+If DIR is not specified, searches in $SHELLBITS_HUNT_HOME if set, otherwise
+in the current directory (.).
+
+Options:
+  -a, --all   search hidden directories as well (still skips .git)
+  -e, --edit  open all found files in the editor ($SHELLBITS_HUNT_EDITOR,
+              $SHELLBITS_EDITOR, $EDITOR, or pico)
+  -h, --help  display this help and exit
+  --          treat all subsequent arguments as positional arguments
+EOF
+}
+
+escape_glob() {
+    local input="$1"
+    local output=""
+    local i char
+    for ((i = 0; i < ${#input}; i++)); do
+        char="${input:i:1}"
+        case "$char" in
+            "\\"|'*'|'?'|'['|']')
+                output="${output}\\${char}"
+                ;;
+            *)
+                output="${output}${char}"
+                ;;
+        esac
+    done
+    printf '%s' "$output"
+}
+
+if [ "$#" -eq 0 ]; then
+    usage >&2
+    exit 1
+fi
+
+args=()
+parse_options=true
+search_all=false
+edit_mode=false
+
+while [ "$#" -gt 0 ]; do
+    arg="$1"
+    shift
+    if [ "$parse_options" = true ]; then
+        case "$arg" in
+            --)
+                parse_options=false
+                continue
+                ;;
+            -a|--all)
+                search_all=true
+                continue
+                ;;
+            -e|--edit)
+                edit_mode=true
+                continue
+                ;;
+            -ae|-ea)
+                search_all=true
+                edit_mode=true
+                continue
+                ;;
+            -h|--help)
+                usage
+                exit 0
+                ;;
+            -*)
+                echo "hunt: unrecognized option '$arg'" >&2
+                echo "Try 'hunt --help' for more information." >&2
+                exit 1
+                ;;
+            *)
+                args+=("$arg")
+                ;;
+        esac
+    else
+        args+=("$arg")
+    fi
+done
+
+if [ "${#args[@]}" -eq 0 ]; then
+    usage >&2
+    exit 1
+fi
+
+if [ "${#args[@]}" -gt 2 ]; then
+    echo "hunt: too many arguments" >&2
+    echo "Try 'hunt --help' for more information." >&2
+    exit 1
+fi
+
+query="${args[0]}"
+if [ -z "$query" ]; then
+    echo "hunt: search query cannot be empty" >&2
+    exit 1
+fi
+
+if [ "${#args[@]}" -eq 2 ]; then
+    search_dir="${args[1]}"
+elif [ -n "${SHELLBITS_HUNT_HOME:-}" ]; then
+    search_dir="$SHELLBITS_HUNT_HOME"
+    if [ "${search_dir#\~/}" != "$search_dir" ]; then
+        search_dir="${HOME:-}/${search_dir#\~/}"
+    elif [ "$search_dir" = "~" ]; then
+        search_dir="${HOME:-}"
+    fi
+else
+    search_dir="."
+fi
+
+if [ ! -e "$search_dir" ]; then
+    echo "hunt: '$search_dir': No such file or directory" >&2
+    exit 1
+fi
+
+if [ ! -d "$search_dir" ]; then
+    echo "hunt: '$search_dir': Not a directory" >&2
+    exit 1
+fi
+
+find_path="$search_dir"
+case "$find_path" in
+    -*)
+        find_path="./$find_path"
+        ;;
+esac
+
+escaped_query="$(escape_glob "$query")"
+
+if [ "$search_all" = true ]; then
+    prune_pattern=".git"
+else
+    prune_pattern=".*"
+fi
+
+# 1. Filename search (case-insensitive, literal, colored)
+raw_name_results="$(
+    find "$find_path" -mindepth 1 -type d -name "$prune_pattern" -prune -o -iname "*${escaped_query}*" -print 2>/dev/null \
+        | LC_ALL=C sort || true
+)"
+
+if [ -n "$raw_name_results" ]; then
+    name_results="$(printf '%s\n' "$raw_name_results" | grep -iF --color=always -- "$query" || true)"
+    if [ -n "$name_results" ]; then
+        printf '%s\n\n' "$name_results"
+    fi
+fi
+
+# 2. Content search (case-insensitive, literal, with matched line and color, skipping binary files)
+content_results="$(
+    find "$find_path" -mindepth 1 -type d -name "$prune_pattern" -prune -o -type f -exec grep -iFHI --color=always -- "$query" {} + 2>/dev/null \
+        | LC_ALL=C sort || true
+)"
+
+if [ -n "$content_results" ]; then
+    printf '%s\n' "$content_results"
+fi
+
+# 3. Open found files in editor if --edit was specified
+if [ "$edit_mode" = true ]; then
+    raw_content_files="$(
+        find "$find_path" -mindepth 1 -type d -name "$prune_pattern" -prune -o -type f -exec grep -iFlI -- "$query" {} + 2>/dev/null || true
+    )"
+
+    combined_candidates=""
+    if [ -n "$raw_name_results" ]; then
+        combined_candidates="$raw_name_results"
+    fi
+    if [ -n "$raw_content_files" ]; then
+        if [ -n "$combined_candidates" ]; then
+            combined_candidates="${combined_candidates}"$'\n'"${raw_content_files}"
+        else
+            combined_candidates="$raw_content_files"
+        fi
+    fi
+
+    if [ -n "$combined_candidates" ]; then
+        sorted_unique="$(printf '%s\n' "$combined_candidates" | LC_ALL=C sort -u)"
+        edit_files=()
+        while IFS= read -r file_path; do
+            if [ -n "$file_path" ] && [ -f "$file_path" ]; then
+                edit_files+=("$file_path")
+            fi
+        done <<< "$sorted_unique"
+
+        if [ "${#edit_files[@]}" -gt 0 ]; then
+            if [ -n "${SHELLBITS_HUNT_EDITOR:-}" ]; then
+                editor_cmd="$SHELLBITS_HUNT_EDITOR"
+            elif [ -n "${SHELLBITS_EDITOR:-}" ]; then
+                editor_cmd="$SHELLBITS_EDITOR"
+            elif [ -n "${EDITOR:-}" ]; then
+                editor_cmd="$EDITOR"
+            else
+                editor_cmd="pico"
+            fi
+
+            read -r -a editor_parts <<< "$editor_cmd"
+            "${editor_parts[@]}" "${edit_files[@]}"
+        fi
+    fi
+fi
+
+exit 0
